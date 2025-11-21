@@ -1,7 +1,7 @@
-const express = require('express');
-const axios = require('axios');
-const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const express = require("express");
+const axios = require("axios");
+const jwt = require("jsonwebtoken");
+const User = require("../models/User");
 
 const router = express.Router();
 
@@ -11,36 +11,40 @@ const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
 const JWT_SECRET = process.env.JWT_SECRET;
 
 // GET /auth/github - Redirect to GitHub OAuth
-router.get('/github', (req, res) => {
-  const scope = 'repo user:email';
+router.get("/github", (req, res) => {
+  const scope = "repo user:email";
   const authUrl = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&scope=${scope}`;
   res.redirect(authUrl);
 });
 
 // GET /auth/github/callback - Handle GitHub OAuth callback
-router.get('/github/callback', async (req, res) => {
+router.get("/github/callback", async (req, res) => {
   const { code } = req.query;
 
   try {
     // Exchange code for access token
-    const tokenResponse = await axios.post('https://github.com/login/oauth/access_token', {
-      client_id: GITHUB_CLIENT_ID,
-      client_secret: GITHUB_CLIENT_SECRET,
-      code: code,
-    }, {
-      headers: {
-        'Accept': 'application/json',
+    const tokenResponse = await axios.post(
+      "https://github.com/login/oauth/access_token",
+      {
+        client_id: GITHUB_CLIENT_ID,
+        client_secret: GITHUB_CLIENT_SECRET,
+        code: code,
       },
-    });
+      {
+        headers: {
+          Accept: "application/json",
+        },
+      }
+    );
 
     const accessToken = tokenResponse.data.access_token;
 
     console.log(accessToken);
 
     // Fetch user profile
-    const userResponse = await axios.get('https://api.github.com/user', {
+    const userResponse = await axios.get("https://api.github.com/user", {
       headers: {
-        'Authorization': `token ${accessToken}`,
+        Authorization: `token ${accessToken}`,
       },
     });
 
@@ -49,19 +53,24 @@ router.get('/github/callback', async (req, res) => {
     // Fetch user emails if primary email is null
     let email = githubUser.email;
     if (!email) {
-      const emailsResponse = await axios.get('https://api.github.com/user/emails', {
-        headers: {
-          'Authorization': `token ${accessToken}`,
-        },
-      });
-      
-      const primaryEmail = emailsResponse.data.find(email => email.primary && email.verified);
+      const emailsResponse = await axios.get(
+        "https://api.github.com/user/emails",
+        {
+          headers: {
+            Authorization: `token ${accessToken}`,
+          },
+        }
+      );
+
+      const primaryEmail = emailsResponse.data.find(
+        (email) => email.primary && email.verified
+      );
       email = primaryEmail ? primaryEmail.email : emailsResponse.data[0]?.email;
     }
 
     // Check if user exists in database
     let user = await User.findOne({ githubId: githubUser.id });
-    
+
     if (user) {
       // Update existing user
       user.email = email || user.email;
@@ -87,40 +96,41 @@ router.get('/github/callback', async (req, res) => {
     const token = jwt.sign(
       { userId: user._id, githubId: user.githubId },
       JWT_SECRET,
-      { expiresIn: '7d' }
+      { expiresIn: "7d" }
     );
 
     // Set token in HTTP-only cookie
-    res.cookie('token', token, {
+    res.cookie("token", token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     });
 
     // Redirect to frontend with success
-    res.redirect(`${process.env.FRONTEND_URL}/callback?success=true`);
-
+    res.redirect(
+      `${process.env.FRONTEND_URL}/callback?success=true&token=${token}`
+    );
   } catch (error) {
-    console.error('GitHub OAuth error:', error);
+    console.error("GitHub OAuth error:", error);
     res.redirect(`${process.env.FRONTEND_URL}/login?error=auth_failed`);
   }
 });
 
 // GET /auth/me - Get current user
-router.get('/me', async (req, res) => {
+router.get("/me", async (req, res) => {
   try {
-    const token = req.cookies.token;
-    
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.split(" ")[1];
     if (!token) {
-      return res.status(401).json({ message: 'No token provided' });
+      return res.status(401).json({ message: "No token provided" });
     }
 
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await User.findById(decoded.userId).select('-__v');
-    
+    const user = await User.findById(decoded.userId).select("-__v");
+
     if (!user) {
-      return res.status(401).json({ message: 'User not found' });
+      return res.status(401).json({ message: "User not found" });
     }
 
     res.json({
@@ -132,15 +142,15 @@ router.get('/me', async (req, res) => {
       createdAt: user.createdAt,
     });
   } catch (error) {
-    console.error('Auth me error:', error);
-    res.status(401).json({ message: 'Invalid token' });
+    console.error("Auth me error:", error);
+    res.status(401).json({ message: "Invalid token" });
   }
 });
 
 // POST /auth/logout - Logout user
-router.post('/logout', (req, res) => {
-  res.clearCookie('token');
-  res.json({ message: 'Logged out successfully' });
+router.post("/logout", (req, res) => {
+  res.clearCookie("token");
+  res.json({ message: "Logged out successfully" });
 });
 
 module.exports = router;
