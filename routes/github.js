@@ -26,8 +26,8 @@ const createOctokit = async (userId) => {
 // GET /github/pull-requests - Fetch all pull requests for user's repositories
 router.get('/pull-requests', async (req, res) => {
   try {
-    const token = req.cookies.token;
-    
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.split(" ")[1];    
     if (!token) {
       return res.status(401).json({ message: 'No token provided' });
     }
@@ -65,8 +65,8 @@ router.get('/pull-requests', async (req, res) => {
 // GET /github/sync-pull-requests - Sync pull requests from GitHub
 router.get('/sync-pull-requests', async (req, res) => {
   try {
-    const token = req.cookies.token;
-    
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.split(" ")[1];    
     if (!token) {
       return res.status(401).json({ message: 'No token provided' });
     }
@@ -156,8 +156,8 @@ router.get('/sync-pull-requests', async (req, res) => {
 // GET /github/dashboard - Get dashboard statistics
 router.get('/dashboard', async (req, res) => {
   try {
-    const token = req.cookies.token;
-    
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.split(" ")[1];    
     if (!token) {
       return res.status(401).json({ message: 'No token provided' });
     }

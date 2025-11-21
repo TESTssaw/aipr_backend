@@ -39,7 +39,8 @@ const createOctokit = async (userId) => {
 // POST /pr/review - Trigger AI review for a pull request
 router.post("/review", async (req, res) => {
   try {
-    const token = req.cookies.token;
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.split(" ")[1];
     const io = req.app.get('io');
 
     if (!token) {
@@ -352,8 +353,8 @@ Be constructive and specific in your feedback. Ensure the issues array contains 
 // GET /pr/:repoName/:prNumber - Get specific PR details with review
 router.get("/:repoName/:prNumber", async (req, res) => {
   try {
-    const token = req.cookies.token;
-
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.split(" ")[1];
     if (!token) {
       return res.status(401).json({ message: "No token provided" });
     }
