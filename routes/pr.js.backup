@@ -1,0 +1,220 @@
+const express = require('express');
+const { Octokit } = require('@octokit/rest');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const jwt = require('jsonwebtoken');
+const PullRequest = require('../models/PullRequest');
+const User = require('../models/User');
+
+const router = express.Router();
+
+const JWT_SECRET = process.env.JWT_SECRET;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+
+// Initialize Gemini AI
+const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
+
+// Helper function to create Octokit instance for user
+const createOctokit = async (userId) => {
+  const user = await User.findById(userId);
+  if (!user || !user.githubToken) {
+    throw new Error('GitHub token not found');
+  }
+  return new Octokit({ auth: user.githubToken });
+};
+
+// POST /pr/review - Trigger AI review for a pull request
+router.post('/review', async (req, res) => {
+  try {
+    const token = req.cookies.token;
+    
+    if (!token) {
+      return res.status(401).json({ message: 'No token provided' });
+    }
+
+    if (!genAI) {
+      return res.status(500).json({ message: 'Gemini AI not configured' });
+    }
+
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { repoName, prNumber } = req.body;
+
+    if (!repoName || !prNumber) {
+      return res.status(400).json({ message: 'repoName and prNumber are required' });
+    }
+
+    // Find the PR in database
+    const pr = await PullRequest.findOne({ 
+      githubId: decoded.githubId, 
+      repoName, 
+      prNumber 
+    });
+
+    if (!pr) {
+      return res.status(404).json({ message: 'Pull request not found' });
+    }
+
+    // Update status to reviewing
+    pr.status = 'reviewing';
+    await pr.save();
+
+    // Start AI review process asynchronously
+    (async () => {
+      try {
+        const octokit = await createOctokit(decoded.githubId);
+        
+        // Get repository owner and name from repoName
+        const [owner, ...repoParts] = repoName.split('/');
+        const repo = repoParts.join('/');
+
+        // Fetch PR diff from GitHub API
+        const { data: prData } = await octokit.rest.pulls.get({
+          owner,
+          repo,
+          pull_number: prNumber
+        });
+
+        // Get the diff
+        const { data: diffData } = await octokit.rest.pulls.get({
+          owner,
+          repo,
+          pull_number: prNumber,
+          mediaType: {
+            format: 'diff'
+          }
+        });
+
+        // Initialize Gemini model
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+        // Create prompt for code review
+        const prompt = `
+Please review this pull request and provide a comprehensive analysis. 
+
+PR Title: ${prData.title}
+PR Description: ${prData.body || 'No description provided'}
+
+Diff:
+${diffData}
+
+Please provide your review in the following JSON format:
+{
+  "summary": "A brief summary of the changes and overall assessment",
+  "issues": ["List of specific issues, concerns, or recommendations for improvement"],
+  "scores": {
+    "overall": 0-10,
+    "codeQuality": 0-10,
+    "performance": 0-10,
+    "security": 0-10
+  }
+}
+
+Focus on:
+1. Code quality and best practices
+2. Performance implications
+3. Security considerations
+4. Potential bugs or edge cases
+5. Code readability and maintainability
+6. Testing considerations
+
+Be constructive and specific in your feedback.
+`;
+
+        // Generate review with Gemini
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const text = response.text();
+
+        // Parse the AI response
+        let reviewData;
+        try {
+          // Extract JSON from the response
+          const jsonMatch = text.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            reviewData = JSON.parse(jsonMatch[0]);
+          } else {
+            throw new Error('No JSON found in response');
+          }
+        } catch (parseError) {
+          console.error('Failed to parse AI response:', parseError);
+          // Fallback to a basic review structure
+          reviewData = {
+            summary: text.substring(0, 500) + '...',
+            issues: ['AI response parsing failed - please review manually'],
+            scores: {
+              overall: 5.0,
+              codeQuality: 5.0,
+              performance: 5.0,
+              security: 5.0
+            }
+          };
+        }
+
+        // Ensure all required fields exist
+        const review = {
+          summary: reviewData.summary || 'Review completed but summary could not be generated.',
+          issues: Array.isArray(reviewData.issues) ? reviewData.issues : ['No specific issues identified'],
+          scores: {
+            overall: Number(reviewData.scores?.overall) || 7.0,
+            codeQuality: Number(reviewData.scores?.codeQuality) || 7.0,
+            performance: Number(reviewData.scores?.performance) || 7.0,
+            security: Number(reviewData.scores?.security) || 7.0
+          },
+          reviewedAt: new Date(),
+          reviewedBy: 'Gemini AI'
+        };
+
+        // Update PR with review results
+        pr.review = review;
+        pr.status = 'reviewed';
+        await pr.save();
+
+        console.log(`Review completed for PR ${prNumber} in ${repoName}`);
+      } catch (error) {
+        console.error('AI review error:', error);
+        pr.status = 'not-reviewed';
+        await pr.save();
+      }
+    })();
+
+    res.json({ 
+      message: 'Review started', 
+      reportId: pr._id.toString() 
+    });
+
+  } catch (error) {
+    console.error('PR review error:', error);
+    res.status(500).json({ message: 'Failed to start review' });
+  }
+});
+
+// GET /pr/:repoName/:prNumber - Get specific PR details with review
+router.get('/:repoName/:prNumber', async (req, res) => {
+  try {
+    const token = req.cookies.token;
+    
+    if (!token) {
+      return res.status(401).json({ message: 'No token provided' });
+    }
+
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { repoName, prNumber } = req.params;
+
+    const pr = await PullRequest.findOne({ 
+      githubId: decoded.githubId, 
+      repoName, 
+      prNumber: parseInt(prNumber) 
+    });
+
+    if (!pr) {
+      return res.status(404).json({ message: 'Pull request not found' });
+    }
+
+    res.json(pr);
+
+  } catch (error) {
+    console.error('Get PR error:', error);
+    res.status(500).json({ message: 'Failed to fetch pull request' });
+  }
+});
+
+module.exports = router;
